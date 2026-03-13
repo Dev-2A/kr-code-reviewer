@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kr-code-reviewer"
+version = "0.1.0"
+description = "PR diff를 읽고 한국어로 코드 리뷰 코멘트를 자동 생성하는 CLI 도구"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "click>=8.1.0",
+    "pygithub>=2.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+kr-review = "kr_code_reviewer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
