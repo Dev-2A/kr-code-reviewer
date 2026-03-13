@@ -40,7 +40,7 @@ def main():
 @click.option("--base", default="main", help="브랜치 비교 시 base 브랜치 (기본: main)")
 @click.option("--commit", "commit_hash", default=None, help="특정 커밋 해시")
 @click.option(
-    ""--format,
+    "--format",
     "output_format",
     type=click.Choice(["markdown", "compact", "github"]),
     default="compact",
