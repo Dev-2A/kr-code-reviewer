@@ -1,0 +1,92 @@
+name: "KR Code Reviewer"
+description: "PR diff를 읽고 한국어로 코드 리뷰 코멘트를 자동 생성합니다"
+author: "Dev-2A"
+
+branding:
+  icon: "code"
+  color: "blue"
+
+inputs:
+  anthropic_api_key:
+    description: "Anthropic API Key"
+    required: true
+  github_token:
+    description: "GitHub Token"
+    required: true
+  model:
+    description: "사용할 Claude 모델"
+    required: false
+    default: "claude-sonnet-4-20250514"
+  max_diff_lines:
+    description: "리뷰할 최대 diff 라인 수"
+    required: false
+    default: "500"
+  language:
+    description: "리뷰 언어"
+    required: false
+    default: "ko"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Python 설정
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: 의존성 설치
+      shell: bash
+      run: pip install anthropic click pygithub python-dotenv
+
+    - name: PR diff 가져오기
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        gh pr diff ${{ github.event.pull_request.number }} > pr_diff.patch
+
+    - name: 코드 리뷰 실행
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        REVIEW_MODEL: ${{ inputs.model }}
+        MAX_DIFF_LINES: ${{ inputs.max_diff_lines }}
+        REVIEW_LANGUAGE: ${{ inputs.language }}
+      run: |
+        python -c "
+        import os, sys
+        sys.path.insert(0, '${{ github.action_path }}/src')
+
+        from kr_code_reviewer.config import Config
+        from kr_code_reviewer.diff_parser import parse_diff_text
+        from kr_code_reviewer.reviewer import CodeReviewer
+        from kr_code_reviewer.formatter import format_review_github_comment
+
+        with open('pr_diff.patch', 'r', encoding='utf-8') as f:
+            diff_text = f.read()
+
+        if not diff_text.strip():
+            print('변경사항이 없습니다.')
+            sys.exit(0)
+
+        config = Config.from_env()
+        parsed_diff = parse_diff_text(diff_text)
+        reviewer = CodeReviewer(config)
+        result = reviewer.review_diff(parsed_diff)
+        formatted = format_review_github_comment(result)
+
+        with open('review_comment.md', 'w', encoding='utf-8') as f:
+            f.write(formatted)
+        "
+
+    - name: PR에 코멘트 작성
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        if [ -f review_comment.md ]; then
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body-file review_comment.md
+        fi

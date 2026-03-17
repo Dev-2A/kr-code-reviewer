@@ -1,0 +1,102 @@
+name: KR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    name: 한국어 코드 리뷰
+
+    steps:
+      - name: 레포지토리 체크아웃
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: kr-code-reviewer 설치
+        run: |
+          pip install anthropic click pygithub python-dotenv
+      
+      - name: PR diff 가져오기
+        id: get_diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} > pr_diff.patch
+          echo "diff_lines=$(wc -l < pr_diff.patch)" >> $GITHUB_OUTPUT
+      
+      - name: diff 파일 확인
+        run: |
+          echo "📊 diff 라인 수: $(wc -l < pr_diff.patch)"
+          if [ ! -s pr_diff.patch ]; then
+            echo "ℹ️ 변경사항이 없습니다."
+            exit 0
+          fi
+      
+      - name: 코드 리뷰 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -c "
+          import os, sys
+          sys.path.insert(0, 'src')
+
+          from kr_code_reviewer.config import Config
+          from kr_code_reviewer.diff_parser import parse_diff_text
+          from kr_code_reviewer.reviewer import CodeReviewer
+          from kr_code_reviewer.formatter import format_review_github_comment
+
+          # diff 읽기
+          with open('pr_diff.patch', 'r', encoding='utf-8') as f:
+              diff_text = f.read()
+
+          if not diff_text.strip():
+              print('변경사항이 없습니다.')
+              sys.exit(0)
+
+          # 설정
+          config = Config(
+              anthropic_api_key=os.environ['ANTHROPIC_API_KEY'],
+              github_token=os.environ['GITHUB_TOKEN'],
+          )
+
+          # 리뷰 실행
+          parsed_diff = parse_diff_text(diff_text)
+          print(f'📊 {parsed_diff.summary()}')
+
+          reviewer = CodeReviewer(config)
+          result = reviewer.review_diff(parsed_diff)
+
+          # 마크다운 결과 저장
+          formatted = format_review_github_comment(result)
+          with open('review_comment.md', 'w', encoding='utf-8') as f:
+              f.write(formatted)
+
+          print('✅ 리뷰 생성 완료')
+          "
+      
+      - name: PR에 코멘트 작성
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f review_comment.md ]; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --repo ${{ github.repository }} \
+              --body-file review_comment.md
+            echo "✅ PR 코멘트 작성 완료"
+          else
+            echo "⚠️ 리뷰 결과 파일이 없습니다."
+          fi
