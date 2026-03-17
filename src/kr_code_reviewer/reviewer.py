@@ -8,6 +8,7 @@ import anthropic
 
 from .config import Config
 from .diff_parser import FileDiff, ParsedDiff
+from .prompts import build_user_prompt, get_system_prompt
 
 
 @dataclass
@@ -42,51 +43,6 @@ class ReviewResult:
     @property
     def suggestion_count(self) -> int:
         return sum(1 for c in self.comments if c.severity in ("suggestion", "nitpick"))
-
-
-SYSTEM_PROMPT = """\
-당신은 시니어 소프트웨어 엔지니어이자 코드 리뷰어입니다.
-주어진 git diff를 분석하고 한국어로 코드 리뷰를 작성합니다.
-
-## 리뷰 원칙
-1. 버그, 보안 취약점, 성능 문제를 최우선으로 지적합니다.
-2. 코드 가독성과 유지보수성을 평가합니다.
-3. 불필요한 지적은 하지 않습니다. 의미 있는 피드백만 제공합니다.
-4. 각 코멘트에는 구체적인 이유와 가능하면 개선 코드를 제안합니다.
-5. 전체적인 변경사항에 대한 요약과 점수(1~10)를 제공합니다.
-
-## 심각도 기준
-- critical: 반드시 수정해야 하는 버그, 보안 취약점
-- warning: 수정을 강력히 권장하는 문제 (성능, 잠재적 버그)
-- suggestion: 개선하면 좋을 사항 (가독성, 구조)
-- nitpick: 사소한 스타일 지적
-
-## 카테고리
-- bug: 논리 오류, 런타임 에러 가능성
-- security: 보안 취약점
-- performance: 성능 문제
-- style: 코딩 컨벤션, 포맷팅
-- readability: 가독성, 네이밍
-- logic: 비즈니스 로직 관련
-
-## 응답 형식
-반드시 아래 XML 형식으로 응답하세요.
-
-<review>
-  <summary>전체 변경사항에 대한 한국어 요약 (2~3문장)</summary>
-  <score>점수(1~10)</score>
-  <comments>
-    <comment>
-      <file>파일경로</file>
-      <line>L시작-L끝</line>
-      <severity>심각도</severity>
-      <category>카테고리</category>
-      <body>한국어 리뷰 코멘트</body>
-      <suggestion>개선 코드 (없으면 빈 태그)</suggestion>
-    </comment>
-  </comments>
-</review>
-"""
 
 
 def _build_diff_prompt(parsed_diff: ParsedDiff, max_lines: int = 500) -> str:
@@ -208,31 +164,33 @@ class CodeReviewer:
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     
-    def review_diff(self, parsed_diff: ParsedDiff) -> ReviewResult:
-        """파싱된 diff를 리뷰합니다."""
+    def review_diff(self, parsed_diff: ParsedDiff, context: str = "") -> ReviewResult:
+        """파싱된 diff를 리뷰합니다.
+
+        Args:
+            parsed_diff: 파싱된 diff 객체
+            context: 추가 컨텍스트 (PR 설명 등)
+        """
         if not parsed_diff.files:
             return ReviewResult(summary="변경사항이 없습니다.")
-        
+
         diff_prompt = _build_diff_prompt(parsed_diff, self.config.max_diff_lines)
         diff_summary = parsed_diff.summary()
-        
-        user_message = (
-            f"아래 git diff를 리뷰해주세요.\n\n"
-            f"**변경 요약:** {diff_summary}\n\n"
-            f"```diff\n{diff_prompt}\n```"
-        )
-        
+
+        system_prompt = get_system_prompt(self.config.language)
+        user_message = build_user_prompt(diff_prompt, diff_summary, context)
+
         response = self.client.messages.create(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )
-        
+
         response_text = response.content[0].text
         result = _parse_review_xml(response_text)
         result.diff_summary = diff_summary
-        
+
         return result
     
     def review_file_diff(self, file_diff: FileDiff) -> ReviewResult:
