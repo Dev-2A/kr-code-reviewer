@@ -204,5 +204,100 @@ def check():
     click.echo(f"  📦 최대 토큰: {config.max_tokens}")
 
 
+@main.command()
+@click.argument("pr_url")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["markdown", "compact", "github"]),
+    default="compact",
+    help="출력 형식 (기본: compact)",
+)
+@click.option("--output", "-o", default=None, help="결과를 파일로 저장 (경로 지정)")
+@click.option("--post", is_flag=True, default=False, help="리뷰 결과를 PR 코멘트로 자동 작성")
+@click.option("--env", "env_path", default=None, help=".env 파일 경로")
+def pr(pr_url, output_format, output, post, env_path):
+    """GitHub PR을 리뷰합니다.
+    
+    PR_URL: PR URL 또는 'owner/repo#번호' 형식
+    
+    예시:
+        kr-review pr https://github.com/Dev-2A/kr-code-reviewer/pull/1
+        kr-review pr Dev-2A/kr-code-reviewer#1
+        kr-review pr Dev-2A/kr-code-reviewer#1 --post
+    """
+    from .github_client import GitHubClient, parse_pr_url
+    
+    # 설정 로드
+    config = Config.from_env(env_path)
+    errors = config.validate(require_github=True)
+    if errors:
+        for err in errors:
+            click.echo(f"❌ {err}", err=True)
+        click.echo("\n💡 .env 파일에 API 키를 설정해주세요.", err=True)
+        sys.exit(1)
+    
+    # PR URL 파싱
+    try:
+        repo_name, pr_number = parse_pr_url(pr_url)
+    except ValueError as e:
+        click.echo(f"❌ {e}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"🔗 PR 정보를 가져오는 중... ({repo_name}#{pr_number})")
+    
+    # GitHub 클라이언트
+    client = GitHubClient(config)
+    
+    try:
+        pr_info = client.get_pr_info(repo_name, pr_number)
+    except Exception as e:
+        click.echo(f"❌ PR 정보를 가져올 수 없습니다: {e}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"📌 #{pr_info.number} {pr_info.title}")
+    click.echo(f"   👤 {pr_info.author} | {pr_info.base_branch} ← {pr_info.head_branch}")
+    click.echo(f"   📊 +{pr_info.additions} -{pr_info.deletions} ({pr_info.changed_files}개 파일)")
+    click.echo("")
+    
+    # 리뷰 실행
+    click.echo("🤖 리뷰를 생성하는 중...")
+    
+    try:
+        result, _ = client.review_pr(repo_name, pr_number)
+    except Exception as e:
+        click.echo(f"❌ 리뷰 생성 실패: {e}", err=True)
+        sys.exit(1)
+    
+    # 결과 포매팅
+    if output_format == "markdown":
+        formatted = format_review_markdown(result)
+    elif output_format == "github":
+        formatted = format_review_github_comment(result)
+    else:
+        formatted = format_review_compact(result)
+    
+    # 출력
+    if output:
+        output_path = Path(output)
+        output_path.write_text(formatted, encoding="utf-8")
+        click.echo(f"✅ 리뷰 결과를 저장했습니다: {output_path}")
+    else:
+        click.echo("")
+        click.echo(formatted)
+    
+    # PR에 코멘트 작성
+    if post:
+        click.echo("")
+        click.echo("📝 PR에 코멘트를 작성하는 중...")
+        try:
+            comment_body = format_review_github_comment(result)
+            comment_url = client.post_review_comment(repo_name, pr_number, comment_body)
+            click.echo(f"✅ 코멘트가 작성되었습니다: {comment_url}")
+        except Exception as e:
+            click.echo(f"❌ 코멘트 작성 실패: {e}", err=True)
+            sys.exit(1)
+
+
 if __name__ == "__main__":
     main()
